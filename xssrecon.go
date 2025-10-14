@@ -118,7 +118,9 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 		body, err := fetch(baseURL, userAgent, timeout)
 		if err != nil {
-			fmt.Printf("Error fetching base URL: %v\n", err)
+			if verbose {
+				fmt.Printf("Error fetching base URL: %v\n", err)
+			}
 			continue
 		}
 
@@ -174,7 +176,9 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 					testBody, err := fetch(testURL, userAgent, timeout)
 					if err != nil {
-						fmt.Printf("Error fetching test URL: %v\n", err)
+						if verbose {
+							fmt.Printf("Error fetching test URL: %v\n", err)
+						}
 						continue
 					}
 

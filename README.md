@@ -24,9 +24,9 @@ go install github.com/rix4uni/xssrecon@latest
 
 ## Download prebuilt binaries
 ```
-wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.1/xssrecon-linux-amd64-0.0.1.tgz
-tar -xvzf xssrecon-linux-amd64-0.0.1.tgz
-rm -rf xssrecon-linux-amd64-0.0.1.tgz
+wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.2/xssrecon-linux-amd64-0.0.2.tgz
+tar -xvzf xssrecon-linux-amd64-0.0.2.tgz
+rm -rf xssrecon-linux-amd64-0.0.2.tgz
 mv xssrecon ~/go/bin/xssrecon
 ```
 Or download [binary release](https://github.com/rix4uni/xssrecon/releases) for your platform.
@@ -38,7 +38,7 @@ cd xssrecon; go install
 ```
 
 ## Usage
-```
+```yaml
 Usage of xssrecon:
       --json                Output results in JSON format.
       --no-color            Do not use colored output.
@@ -53,17 +53,17 @@ Usage of xssrecon:
 ## Usage Examples
 
 Single URL:
-```
+```yaml
 echo "https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat" | xssrecon
 ```
 
 Multiple URLs:
-```
+```yaml
 cat urls.txt | xssrecon
 ```
 
 ## Output Examples
-```
+```yaml
 Top XSS payloads is: 50
 urls.txt: 4
 
