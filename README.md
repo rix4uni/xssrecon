@@ -33,7 +33,7 @@ Or download [binary release](https://github.com/rix4uni/xssrecon/releases) for y
 
 ## Compile from source
 ```
-git clone --depth 1 github.com/rix4uni/xssrecon.git
+git clone --depth 1 https://github.com/rix4uni/xssrecon.git
 cd xssrecon; go install
 ```
 
