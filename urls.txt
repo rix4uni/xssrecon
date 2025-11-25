@@ -2,3 +2,4 @@ https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat
 https://labs.hackxpert.com/RXSS/GET/00.php?fname=hello
 http://testphp.vulnweb.com/artists.php?artist=1&id=2
 http://testphp.vulnweb.com/artists.php?file=cat
+https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni
