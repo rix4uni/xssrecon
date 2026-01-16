@@ -23,6 +23,7 @@ import (
 var specialChars = []string{`'`, `"`, `<`, `>`, `(`, `)`, "`", `{`, `}`, `/`, `\`, `;`}
 
 var outputMutex sync.Mutex
+var chromedpSemaphore chan struct{}
 
 // Thread-safe print functions
 func safePrintf(format string, a ...interface{}) {
@@ -78,6 +79,12 @@ func fetch(url string, userAgent string, timeout int) (string, error) {
 }
 
 func fetchDOM(url string, userAgent string, timeout int) (string, error) {
+	// Acquire semaphore for concurrency control
+	if chromedpSemaphore != nil {
+		chromedpSemaphore <- struct{}{}
+		defer func() { <-chromedpSemaphore }()
+	}
+
 	// Create context with timeout
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer timeoutCancel()
@@ -118,7 +125,7 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 }
 
 func runPvreplace(inputURL, payload string) (string, error) {
-	cmd := exec.Command("pvreplace", "-silent", "-payload", payload, "-fuzzing-mode", "single")
+	cmd := exec.Command("pvreplace", "-silent", "-payload", payload, "-fuzzing-mode", "multiple")
 	cmd.Stdin = strings.NewReader(inputURL)
 
 	var out bytes.Buffer
@@ -157,7 +164,7 @@ func parseSpecialChars(input string) []string {
 	return result
 }
 
-func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, skipSpecialChar bool, jsonOutput bool, customSpecialChars []string) {
+func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, skipSpecialChar bool, jsonOutput bool, customSpecialChars []string, chromedpTimeout int, noChromeDP bool) {
 	if !jsonOutput {
 		if noColor {
 			safePrintf("\nPROCESSING: %s\n", inputURL)
@@ -206,7 +213,7 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 		baseFoundInDOM := false
 
 		// If not found in HTML, check DOM as fallback
-		if !reflected {
+		if !reflected && !noChromeDP {
 			if verbose && !jsonOutput {
 				if noColor {
 					safePrintln("Not found in HTML, checking DOM...")
@@ -214,7 +221,7 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 					safePrintln("\033[36mNot found in HTML, checking DOM...\033[0m")
 				}
 			}
-			domBody, err = fetchDOM(baseURL, userAgent, timeout)
+			domBody, err = fetchDOM(baseURL, userAgent, chromedpTimeout)
 			if err != nil {
 				if verbose {
 					safePrintf("Error fetching DOM: %v\n", err)
@@ -281,8 +288,8 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 					foundInDOM := false
 
 					// If base URL was only found in DOM, skip HTML check and go straight to DOM
-					if baseFoundInDOM && !baseFoundInHTML {
-						testDomBody, err = fetchDOM(testURL, userAgent, timeout)
+					if baseFoundInDOM && !baseFoundInHTML && !noChromeDP {
+						testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
 						if err != nil {
 							if verbose {
 								safePrintf("Error fetching DOM for test URL: %v\n", err)
@@ -304,8 +311,8 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 						foundInHTML = strings.Contains(testBody, "rix4uni"+char)
 
 						// If not found in HTML, check DOM as fallback
-						if !foundInHTML {
-							testDomBody, err = fetchDOM(testURL, userAgent, timeout)
+						if !foundInHTML && !noChromeDP {
+							testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
 							if err != nil {
 								if verbose {
 									safePrintf("Error fetching DOM for test URL: %v\n", err)
@@ -335,9 +342,9 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 							// If not found in HTML, check DOM for converted entities
 							if !convertedInHTML && testDomBody != "" {
 								convertedInDOM = strings.Contains(testDomBody, "rix4uni"+conv)
-							} else if !convertedInHTML {
+							} else if !convertedInHTML && !noChromeDP {
 								// Fetch DOM if we haven't already
-								testDomBody, err = fetchDOM(testURL, userAgent, timeout)
+								testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
 								if err == nil {
 									convertedInDOM = strings.Contains(testDomBody, "rix4uni"+conv)
 								}
@@ -402,15 +409,18 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 func main() {
 	userAgent := pflag.StringP("user-agent", "H", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", "Custom User-Agent header for HTTP requests.")
-	timeout := pflag.IntP("timeout", "t", 30, "Timeout for HTTP requests in seconds.")
+	timeout := pflag.IntP("timeout", "t", 15, "Timeout for HTTP requests in seconds.")
 	skipSpecialChar := pflag.BoolP("skipspecialchar", "s", false, "Only check rix4uni in reponse and move to next url, skip checking special characters.")
 	specialChar := pflag.String("specialchar", "", "Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.")
-	concurrent := pflag.IntP("concurrent", "c", 10, "Number of concurrent workers for processing URLs (default: 10).")
+	concurrent := pflag.IntP("concurrent", "c", 50, "Number of concurrent workers for processing URLs (default: 10).")
 	noColor := pflag.Bool("no-color", false, "Do not use colored output.")
 	silent := pflag.Bool("silent", false, "silent mode.")
 	version := pflag.Bool("version", false, "Print the version of the tool and exit.")
 	verbose := pflag.Bool("verbose", false, "Enable verbose output for debugging purposes.")
 	jsonOutput := pflag.Bool("json", false, "Output results in JSON format.")
+	chromedpConcurrent := pflag.Int("chromedp-concurrent", 5, "Number of concurrent ChromeDP browser instances")
+	chromedpTimeout := pflag.Int("chromedp-timeout", 30, "ChromeDP page rendering timeout in seconds")
+	noChromeDP := pflag.Bool("no-chromedp", false, "Disable ChromeDP fallback")
 	pflag.Parse()
 
 	if *version {
@@ -460,6 +470,13 @@ func main() {
 		return
 	}
 
+	// Initialize ChromeDP semaphore for concurrency control
+	numChromeDPWorkers := *chromedpConcurrent
+	if numChromeDPWorkers < 1 {
+		numChromeDPWorkers = 1
+	}
+	chromedpSemaphore = make(chan struct{}, numChromeDPWorkers)
+
 	// Create worker pool
 	numWorkers := *concurrent
 	if numWorkers < 1 {
@@ -478,7 +495,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for url := range jobs {
-				processURL(url, *userAgent, *timeout, *noColor, *verbose, *skipSpecialChar, *jsonOutput, charsToUse)
+				processURL(url, *userAgent, *timeout, *noColor, *verbose, *skipSpecialChar, *jsonOutput, charsToUse, *chromedpTimeout, *noChromeDP)
 			}
 		}()
 	}

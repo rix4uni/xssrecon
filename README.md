@@ -6,13 +6,15 @@ It automates the process of testing URL parameters for reflection of a test payl
 ### 🚀 Features:
 
 * **Dual Detection Method**: Detects if input is reflected in both HTTP response body and rendered DOM
-* **DOM Checking**: Automatically checks JavaScript-rendered content using headless Chrome (chromedp)
+* **DOM Checking**: Automatically checks JavaScript-rendered content using headless Chrome (chromedp) with configurable concurrency and timeout
 * **Smart Optimization**: Skips HTML checks for special characters when base URL is only found in DOM
 * **Custom Special Characters**: Test custom special characters with `--specialchar` flag
-* **Concurrent Processing**: Process multiple URLs in parallel with configurable worker pool (default: 10)
+* **Concurrent Processing**: Process multiple URLs in parallel with configurable worker pool (default: 50)
+* **ChromeDP Concurrency Control**: Limit concurrent ChromeDP browser instances to manage resource usage (default: 5)
 * **Special Character Testing**: Tests special characters for allowed, blocked, or converted behavior
 * **Flexible Output**: Supports JSON output, colorized or plain text, silent and verbose modes
 * **Parameter Injection**: Uses external `pvreplace` tool for precise parameter injection
+* **ChromeDP Control**: Disable DOM checking entirely with `--no-chromedp` flag for faster execution when only HTML checking is needed
 
 ## Prerequisites
 
@@ -34,9 +36,9 @@ go install github.com/rix4uni/xssrecon@latest
 ## Download prebuilt binaries
 
 ```
-wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.3/xssrecon-linux-amd64-0.0.3.tgz
-tar -xvzf xssrecon-linux-amd64-0.0.3.tgz
-rm -rf xssrecon-linux-amd64-0.0.3.tgz
+wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.4/xssrecon-linux-amd64-0.0.4.tgz
+tar -xvzf xssrecon-linux-amd64-0.0.4.tgz
+rm -rf xssrecon-linux-amd64-0.0.4.tgz
 mv xssrecon ~/go/bin/xssrecon
 ```
 
@@ -53,16 +55,19 @@ cd xssrecon; go install
 
 ```yaml
 Usage of xssrecon:
-  -c, --concurrent int        Number of concurrent workers for processing URLs (default: 10)
-  -H, --user-agent string     Custom User-Agent header for HTTP requests. (default "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
-  -s, --skipspecialchar       Only check rix4uni in response and move to next url, skip checking special characters.
-  -t, --timeout int           Timeout for HTTP requests in seconds. (default 30)
-      --json                  Output results in JSON format.
-      --no-color              Do not use colored output.
-      --silent                silent mode.
-      --specialchar string    Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.
-      --verbose               Enable verbose output for debugging purposes.
-      --version               Print the version of the tool and exit.
+  -c, --concurrent int           Number of concurrent workers for processing URLs (default: 50)
+  -H, --user-agent string        Custom User-Agent header for HTTP requests. (default "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
+  -s, --skipspecialchar          Only check rix4uni in response and move to next url, skip checking special characters.
+  -t, --timeout int              Timeout for HTTP requests in seconds. (default 15)
+      --chromedp-concurrent int  Number of concurrent ChromeDP browser instances (default 5)
+      --chromedp-timeout int     ChromeDP page rendering timeout in seconds (default 30)
+      --no-chromedp              Disable ChromeDP fallback
+      --json                     Output results in JSON format.
+      --no-color                 Do not use colored output.
+      --silent                   silent mode.
+      --specialchar string       Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.
+      --verbose                  Enable verbose output for debugging purposes.
+      --version                  Print the version of the tool and exit.
 ```
 
 ## Usage Examples
@@ -95,6 +100,16 @@ cat urls.txt | xssrecon --silent --json
 ### Skip special character checks (faster):
 ```yaml
 cat urls.txt | xssrecon --silent --skipspecialchar --json
+```
+
+### Disable ChromeDP DOM checking (faster, HTML only):
+```yaml
+cat urls.txt | xssrecon --no-chromedp
+```
+
+### Configure ChromeDP concurrency and timeout:
+```yaml
+cat urls.txt | xssrecon --chromedp-concurrent 10 --chromedp-timeout 60
 ```
 
 ## Output Examples
@@ -153,17 +168,22 @@ cat urls.txt | xssrecon --silent --json | jq -r 'select(.reflected==true) | sele
 
 1. **Parameter Injection**: Uses `pvreplace` to inject the test payload `rix4uni` into URL parameters
 2. **HTML Check**: First checks if the payload is reflected in the raw HTTP response body
-3. **DOM Check**: If not found in HTML, automatically checks the rendered DOM using headless Chrome
+3. **DOM Check**: If not found in HTML (and `--no-chromedp` is not set), automatically checks the rendered DOM using headless Chrome with configurable concurrency and timeout
 4. **Special Character Testing**: Tests each special character to determine if it's allowed, blocked, or converted
 5. **Optimization**: If base URL is only found in DOM, skips HTML checks for special characters (faster execution)
-6. **Concurrent Processing**: Processes multiple URLs in parallel using a worker pool
+6. **Concurrent Processing**: Processes multiple URLs in parallel using a worker pool (configurable with `--concurrent`)
+7. **ChromeDP Concurrency Control**: ChromeDP operations are limited by `--chromedp-concurrent` to prevent resource exhaustion
 
 ## Notes
 
 * DOM checking requires Chrome/Chromium to be installed on your system
 * If Chrome is not available, DOM checking will fail gracefully and only HTML checking will be performed
-* The `--concurrent` flag controls how many URLs are processed simultaneously (default: 10)
+* The `--concurrent` flag controls how many URLs are processed simultaneously (default: 50)
+* The `--chromedp-concurrent` flag controls how many ChromeDP browser instances run concurrently (default: 5)
+* Use `--no-chromedp` to disable DOM checking entirely for faster execution when only HTML checking is needed
+* Use `--chromedp-timeout` to adjust the timeout for ChromeDP page rendering (default: 30 seconds)
 * Use `--specialchar` to test specific characters instead of the default set
 * `--specialchar` and `--skipspecialchar` cannot be used together
+* The default HTTP request timeout is 15 seconds (configurable with `-t` or `--timeout`)
 
 <img width="792" height="820" alt="image" src="https://github.com/user-attachments/assets/3209c95f-cb7f-4f15-b85e-dd25c4b490a2" />

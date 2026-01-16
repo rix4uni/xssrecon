@@ -1,6 +1,6 @@
 module github.com/rix4uni/xssrecon
 
-go 1.25.0
+go 1.25.5
 
 require (
 	github.com/chromedp/chromedp v0.14.2
