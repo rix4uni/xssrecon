@@ -8,11 +8,12 @@ It automates the process of testing URL parameters for reflection of a test payl
 * **Dual Detection Method**: Detects if input is reflected in both HTTP response body and rendered DOM
 * **DOM Checking**: Automatically checks JavaScript-rendered content using headless Chrome (chromedp) with configurable concurrency and timeout
 * **Smart Optimization**: Skips HTML checks for special characters when base URL is only found in DOM
-* **Custom Special Characters**: Test custom special characters with `--specialchar` flag
+* **Custom Special Characters**: Test custom special characters with `--checkspecialchar` flag (inline or from .txt file)
+* **First Match Optimization**: Stops checking special characters after finding the first allowed character for faster scanning
 * **Concurrent Processing**: Process multiple URLs in parallel with configurable worker pool (default: 50)
 * **ChromeDP Concurrency Control**: Limit concurrent ChromeDP browser instances to manage resource usage (default: 5)
 * **Special Character Testing**: Tests special characters for allowed, blocked, or converted behavior
-* **Flexible Output**: Supports JSON output, colorized or plain text, silent and verbose modes
+* **Flexible Output**: Supports compact JSON output, colorized or plain text single-line format, silent and verbose modes
 * **Parameter Injection**: Uses external `pvreplace` tool for precise parameter injection
 * **ChromeDP Control**: Disable DOM checking entirely with `--no-chromedp` flag for faster execution when only HTML checking is needed
 
@@ -36,9 +37,9 @@ go install github.com/rix4uni/xssrecon@latest
 ## Download prebuilt binaries
 
 ```
-wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.4/xssrecon-linux-amd64-0.0.4.tgz
-tar -xvzf xssrecon-linux-amd64-0.0.4.tgz
-rm -rf xssrecon-linux-amd64-0.0.4.tgz
+wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.5/xssrecon-linux-amd64-0.0.5.tgz
+tar -xvzf xssrecon-linux-amd64-0.0.5.tgz
+rm -rf xssrecon-linux-amd64-0.0.5.tgz
 mv xssrecon ~/go/bin/xssrecon
 ```
 
@@ -59,13 +60,13 @@ Usage of xssrecon:
   -H, --user-agent string        Custom User-Agent header for HTTP requests. (default "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
   -s, --skipspecialchar          Only check rix4uni in response and move to next url, skip checking special characters.
   -t, --timeout int              Timeout for HTTP requests in seconds. (default 15)
+      --checkspecialchar string  Custom special characters to test (inline or .txt file, e.g., "'><script>" or "tags.txt"). Cannot be used with --skipspecialchar.
       --chromedp-concurrent int  Number of concurrent ChromeDP browser instances (default 5)
       --chromedp-timeout int     ChromeDP page rendering timeout in seconds (default 30)
       --no-chromedp              Disable ChromeDP fallback
-      --json                     Output results in JSON format.
+      --json                     Output results in compact JSON format.
       --no-color                 Do not use colored output.
       --silent                   silent mode.
-      --specialchar string       Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.
       --verbose                  Enable verbose output for debugging purposes.
       --version                  Print the version of the tool and exit.
 ```
@@ -82,9 +83,18 @@ echo "https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat" | xssrecon
 cat urls.txt | xssrecon --concurrent 20
 ```
 
-### Custom special characters:
+### Custom special characters (inline):
 ```yaml
-cat urls.txt | xssrecon --specialchar "<, >"
+cat urls.txt | xssrecon --checkspecialchar "'><script>"
+```
+
+### Custom special characters (from file):
+```yaml
+# Create tags.txt with one tag per line:
+# <script>
+# <Script>
+# </script>
+cat urls.txt | xssrecon --checkspecialchar tags.txt
 ```
 
 ### Verbose mode (shows DOM checking):
@@ -114,45 +124,23 @@ cat urls.txt | xssrecon --chromedp-concurrent 10 --chromedp-timeout 60
 
 ## Output Examples
 
-### Standard Output:
+### Standard Output (Single-line format):
 ```yaml
-PROCESSING: https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat
-BASEURL: https://labs.hackxpert.com/RXSS/GET/01.php?fname=rix4uni
-REFLECTED: YES
-ALLOWED: [' " < > ( ) ` { } / \ ;]
-BLOCKED: []
-CONVERTED: []
+https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat [REFLECTED: YES] [ALLOWED: ' " < > ( ) ` { } / \ ;] [BLOCKED: ] [CONVERTED: ]
 ```
 
 ### Verbose Output (DOM detection):
 ```yaml
-PROCESSING: https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni
-BASEURL: https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni
 Not found in HTML, checking DOM...
-REFLECTED: YES
 CHECKING: https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni'
 CHECKING: https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni"
 ...
-ALLOWED: [' " ( ) ` { } / \ ;]
-BLOCKED: []
-CONVERTED: [< ➔ &lt; > ➔ &gt;]
+https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni [REFLECTED: YES] [ALLOWED: ' " ( ) ` { } / \ ;] [BLOCKED: ] [CONVERTED: < ➔ &lt; > ➔ &gt;]
 ```
 
-### JSON Output:
+### Compact JSON Output:
 ```json
-{
-  "processing": "https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat",
-  "baseurl": "https://labs.hackxpert.com/RXSS/GET/01.php?fname=rix4uni",
-  "reflected": true,
-  "allowed": ["'", "\"", "<", ">", "(", ")", "`", "{", "}", "/", "\\", ";"],
-  "blocked": [],
-  "converted": [],
-  "count": {
-    "allowed": 12,
-    "blocked": 0,
-    "converted": 0
-  }
-}
+{"baseurl":"https://labs.hackxpert.com/RXSS/GET/01.php?fname=rat","reflected":true,"allowed":["'","\"","<",">","(",")","`","{","}","/","\\",";"],"blocked":[],"converted":[],"count":{"allowed":12,"blocked":0,"converted":0}}
 ```
 
 ### Filtering with jq:
@@ -182,8 +170,12 @@ cat urls.txt | xssrecon --silent --json | jq -r 'select(.reflected==true) | sele
 * The `--chromedp-concurrent` flag controls how many ChromeDP browser instances run concurrently (default: 5)
 * Use `--no-chromedp` to disable DOM checking entirely for faster execution when only HTML checking is needed
 * Use `--chromedp-timeout` to adjust the timeout for ChromeDP page rendering (default: 30 seconds)
-* Use `--specialchar` to test specific characters instead of the default set
-* `--specialchar` and `--skipspecialchar` cannot be used together
+* Use `--checkspecialchar` to test specific characters inline (e.g., "'><script>") or from a .txt file (e.g., tags.txt)
+* The tool automatically detects .txt files and reads each line as a separate special character/string to test
+* Special character checking stops after finding the first allowed character for faster scanning
+* `--checkspecialchar` and `--skipspecialchar` cannot be used together
 * The default HTTP request timeout is 15 seconds (configurable with `-t` or `--timeout`)
+* Output is now in single-line format for better readability and parsing
+* JSON output is compact (single line) instead of pretty-printed for easier processing
 
 <img width="792" height="820" alt="image" src="https://github.com/user-attachments/assets/3209c95f-cb7f-4f15-b85e-dd25c4b490a2" />

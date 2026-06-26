@@ -39,7 +39,6 @@ func safePrintln(a ...interface{}) {
 }
 
 type JSONOutput struct {
-	Processing string         `json:"processing"`
 	BaseURL    string         `json:"baseurl"`
 	Reflected  bool           `json:"reflected"`
 	Allowed    []string       `json:"allowed"`
@@ -165,13 +164,7 @@ func parseSpecialChars(input string) []string {
 }
 
 func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, skipSpecialChar bool, jsonOutput bool, customSpecialChars []string, chromedpTimeout int, noChromeDP bool) {
-	if !jsonOutput {
-		if noColor {
-			safePrintf("\nPROCESSING: %s\n", inputURL)
-		} else {
-			safePrintf("\n\033[96mPROCESSING: %s\033[0m\n", inputURL)
-		}
-	}
+	// Store inputURL for later single-line output
 
 	baseURLsRaw, err := runPvreplace(inputURL, "rix4uni")
 	if err != nil {
@@ -188,16 +181,9 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 		}
 
 		var output JSONOutput
-		output.Processing = inputURL
-		output.BaseURL = baseURL
+		output.BaseURL = inputURL
 
-		if !jsonOutput {
-			if noColor {
-				safePrintf("BASEURL: %s\n", baseURL)
-			} else {
-				safePrintf("\033[94mBASEURL: %s\033[0m\n", baseURL)
-			}
-		}
+		// BASEURL will be included in single-line output
 
 		body, err := fetch(baseURL, userAgent, timeout)
 		if err != nil {
@@ -234,13 +220,6 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 		if reflected {
 			output.Reflected = true
-			if !jsonOutput {
-				if noColor {
-					safePrintln("REFLECTED: YES")
-				} else {
-					safePrintln("\033[92mREFLECTED: YES\033[0m")
-				}
-			}
 
 			// If skipSpecialChar is set, skip the rest
 			if skipSpecialChar {
@@ -249,8 +228,14 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 					output.Blocked = []string{}
 					output.Converted = []string{}
 					output.Count = map[string]int{"allowed": 0, "blocked": 0, "converted": 0}
-					jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+					jsonBytes, _ := json.Marshal(output)
 					safePrintln(string(jsonBytes))
+				} else {
+					if noColor {
+						safePrintf("%s [REFLECTED: YES] [ALLOWED: ] [BLOCKED: ] [CONVERTED: ]\n", inputURL)
+					} else {
+						safePrintf("%s [\033[92mREFLECTED: YES\033[0m] [\033[32mALLOWED: \033[0m] [\033[31mBLOCKED: \033[0m] [\033[33mCONVERTED: \033[0m]\n", inputURL)
+					}
 				}
 				continue
 			}
@@ -260,6 +245,7 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 			blocked := []string{}
 			converted := []string{}
 
+		outerLoop:
 			for _, char := range customSpecialChars {
 				testURLRaw, err := runPvreplace(baseURL, "rix4uni"+char)
 				if err != nil {
@@ -325,6 +311,7 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 					if foundInHTML || foundInDOM {
 						allowed = append(allowed, char) // ALLOWED
+						break outerLoop // Stop checking after first allowed character
 					} else if conv, exists := conversions[char]; exists {
 						convertedInHTML := false
 						convertedInDOM := false
@@ -373,17 +360,17 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 					"blocked":   len(blocked),
 					"converted": len(converted),
 				}
-				jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+				jsonBytes, _ := json.Marshal(output)
 				safePrintln(string(jsonBytes))
 			} else {
+				// Single-line output format
+				allowedStr := strings.Join(allowed, " ")
+				blockedStr := strings.Join(blocked, " ")
+				convertedStr := strings.Join(converted, " ")
 				if noColor {
-					safePrintf("ALLOWED: %v\n", allowed)
-					safePrintf("BLOCKED: %v\n", blocked)
-					safePrintf("CONVERTED: %v\n", converted)
+					safePrintf("%s [REFLECTED: YES] [ALLOWED: %s] [BLOCKED: %s] [CONVERTED: %s]\n", inputURL, allowedStr, blockedStr, convertedStr)
 				} else {
-					safePrintf("\033[32mALLOWED: %v\033[0m\n", allowed)
-					safePrintf("\033[31mBLOCKED: %v\033[0m\n", blocked)
-					safePrintf("\033[33mCONVERTED: %v\033[0m\n", converted)
+					safePrintf("%s [\033[92mREFLECTED: YES\033[0m] [\033[32mALLOWED: %s\033[0m] [\033[31mBLOCKED: %s\033[0m] [\033[33mCONVERTED: %s\033[0m]\n", inputURL, allowedStr, blockedStr, convertedStr)
 				}
 			}
 
@@ -394,13 +381,14 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 				output.Blocked = []string{}
 				output.Converted = []string{}
 				output.Count = map[string]int{"allowed": 0, "blocked": 0, "converted": 0}
-				jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+				jsonBytes, _ := json.Marshal(output)
 				safePrintln(string(jsonBytes))
 			} else {
+				// Single-line output for non-reflected URLs
 				if noColor {
-					safePrintln("REFLECTED: NO")
+					safePrintf("%s [REFLECTED: NO] [ALLOWED: ] [BLOCKED: ] [CONVERTED: ]\n", inputURL)
 				} else {
-					safePrintln("\033[91mREFLECTED: NO\033[0m")
+					safePrintf("%s [\033[91mREFLECTED: NO\033[0m] [\033[32mALLOWED: \033[0m] [\033[31mBLOCKED: \033[0m] [\033[33mCONVERTED: \033[0m]\n", inputURL)
 				}
 			}
 		}
@@ -411,7 +399,7 @@ func main() {
 	userAgent := pflag.StringP("user-agent", "H", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", "Custom User-Agent header for HTTP requests.")
 	timeout := pflag.IntP("timeout", "t", 15, "Timeout for HTTP requests in seconds.")
 	skipSpecialChar := pflag.BoolP("skipspecialchar", "s", false, "Only check rix4uni in reponse and move to next url, skip checking special characters.")
-	specialChar := pflag.String("specialchar", "", "Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.")
+	checkspecialChar := pflag.String("checkspecialchar", "", "Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.")
 	concurrent := pflag.IntP("concurrent", "c", 50, "Number of concurrent workers for processing URLs (default: 10).")
 	noColor := pflag.Bool("no-color", false, "Do not use colored output.")
 	silent := pflag.Bool("silent", false, "silent mode.")
@@ -429,18 +417,35 @@ func main() {
 		return
 	}
 
-	// Validate that --specialchar and --skipspecialchar are not used together
-	if *specialChar != "" && *skipSpecialChar {
-		fmt.Fprintf(os.Stderr, "Error: --specialchar and --skipspecialchar cannot be used together\n")
+	// Validate that --checkspecialchar and --skipspecialchar are not used together
+	if *checkspecialChar != "" && *skipSpecialChar {
+		fmt.Fprintf(os.Stderr, "Error: --checkspecialchar and --skipspecialchar cannot be used together\n")
 		os.Exit(1)
 	}
 
 	// Parse custom special characters if provided
 	var charsToUse []string
-	if *specialChar != "" {
-		charsToUse = parseSpecialChars(*specialChar)
+	if *checkspecialChar != "" {
+		// Check if input is a file (contains .txt)
+		if strings.Contains(*checkspecialChar, ".txt") {
+			fileContent, err := ioutil.ReadFile(*checkspecialChar)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading file %s: %v\n", *checkspecialChar, err)
+				os.Exit(1)
+			}
+			// Parse each line as a separate special character/string
+			lines := strings.Split(string(fileContent), "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					charsToUse = append(charsToUse, trimmed)
+				}
+			}
+		} else {
+			charsToUse = parseSpecialChars(*checkspecialChar)
+		}
 		if len(charsToUse) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: --specialchar provided but no valid characters found\n")
+			fmt.Fprintf(os.Stderr, "Error: --checkspecialchar provided but no valid characters found\n")
 			os.Exit(1)
 		}
 	} else {
