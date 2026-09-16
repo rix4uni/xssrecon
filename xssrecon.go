@@ -2,15 +2,13 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
-	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +18,10 @@ import (
 	"github.com/spf13/pflag"
 )
 
-var specialChars = []string{`'`, `"`, `<`, `>`, `(`, `)`, "`", `{`, `}`, `/`, `\`, `;`}
+const (
+	payloadPrefix = "rix4uni"
+	payloadSuffix = "'\">"
+)
 
 var outputMutex sync.Mutex
 var chromedpSemaphore chan struct{}
@@ -36,15 +37,6 @@ func safePrintln(a ...interface{}) {
 	outputMutex.Lock()
 	defer outputMutex.Unlock()
 	fmt.Println(a...)
-}
-
-type JSONOutput struct {
-	BaseURL    string         `json:"baseurl"`
-	Reflected  bool           `json:"reflected"`
-	Allowed    []string       `json:"allowed"`
-	Blocked    []string       `json:"blocked"`
-	Converted  []string       `json:"converted"`
-	Count      map[string]int `json:"count"`
 }
 
 func fetch(url string, userAgent string, timeout int) (string, error) {
@@ -123,274 +115,75 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 	return htmlContent, nil
 }
 
-func runPvreplace(inputURL, payload string) (string, error) {
-	cmd := exec.Command("pvreplace", "-silent", "-payload", payload, "-fuzzing-mode", "multiple")
-	cmd.Stdin = strings.NewReader(inputURL)
+var reParamValue = regexp.MustCompile(`=[^&\s]*`)
 
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	err := cmd.Run()
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(out.String()), nil
+func replaceParamValues(url string) (string, []string) {
+	count := 0
+	var payloads []string
+	modifiedURL := reParamValue.ReplaceAllStringFunc(url, func(match string) string {
+		count++
+		p := fmt.Sprintf("%s%d%s", payloadPrefix, count, payloadSuffix)
+		payloads = append(payloads, p)
+		return "=" + p
+	})
+	return modifiedURL, payloads
 }
 
-var conversions = map[string]string{
-	"'": "&#039;",
-	`"`: "&quot;",
-	"<": "&lt;",
-	">": "&gt;",
-}
-
-func parseSpecialChars(input string) []string {
-	if input == "" {
-		return []string{}
-	}
-
-	parts := strings.Split(input, ",")
-	result := []string{}
-
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
+func isReflected(content string, payloads []string) bool {
+	for _, p := range payloads {
+		if strings.Contains(content, p) {
+			return true
 		}
 	}
-
-	return result
+	return false
 }
 
-func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, skipSpecialChar bool, jsonOutput bool, customSpecialChars []string, chromedpTimeout int, noChromeDP bool) {
-	// Store inputURL for later single-line output
+func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, chromedpTimeout int, noChromeDP bool, vuln bool) {
+	// Build the test URL by injecting numbered payloads into all parameter values
+	testURL, injectedPayloads := replaceParamValues(inputURL)
 
-	baseURLsRaw, err := runPvreplace(inputURL, "rix4uni")
-	if err != nil {
-		safePrintf("Error running pvreplace: %v\n", err)
-		return
+	// Make a single HTTP request with the full payload
+	body, fetchErr := fetch(testURL, userAgent, timeout)
+	reflected := false
+
+	if fetchErr != nil {
+		if verbose {
+			safePrintf("Error fetching URL: %v\n", fetchErr)
+		}
+	} else {
+		reflected = isReflected(body, injectedPayloads)
 	}
 
-	baseURLs := strings.Split(baseURLsRaw, "\n")
-
-	for _, baseURL := range baseURLs {
-		baseURL = strings.TrimSpace(baseURL)
-		if baseURL == "" {
-			continue
+	// If not found in HTML, check DOM as fallback
+	if !reflected && !noChromeDP && fetchErr == nil {
+		if verbose {
+			if noColor {
+				safePrintln("Not found in HTML, checking DOM...")
+			} else {
+				safePrintln("\033[36mNot found in HTML, checking DOM...\033[0m")
+			}
 		}
-
-		var output JSONOutput
-		output.BaseURL = inputURL
-
-		// BASEURL will be included in single-line output
-
-		body, err := fetch(baseURL, userAgent, timeout)
-		if err != nil {
+		domBody, domErr := fetchDOM(testURL, userAgent, chromedpTimeout)
+		if domErr != nil {
 			if verbose {
-				safePrintf("Error fetching base URL: %v\n", err)
+				safePrintf("Error fetching DOM: %v\n", domErr)
 			}
-			continue
-		}
-
-		reflected := strings.Contains(body, "rix4uni")
-		var domBody string
-		baseFoundInHTML := reflected
-		baseFoundInDOM := false
-
-		// If not found in HTML, check DOM as fallback
-		if !reflected && !noChromeDP {
-			if verbose && !jsonOutput {
-				if noColor {
-					safePrintln("Not found in HTML, checking DOM...")
-				} else {
-					safePrintln("\033[36mNot found in HTML, checking DOM...\033[0m")
-				}
-			}
-			domBody, err = fetchDOM(baseURL, userAgent, chromedpTimeout)
-			if err != nil {
-				if verbose {
-					safePrintf("Error fetching DOM: %v\n", err)
-				}
-			} else {
-				reflected = strings.Contains(domBody, "rix4uni")
-				baseFoundInDOM = reflected
-			}
-		}
-
-		if reflected {
-			output.Reflected = true
-
-			// If skipSpecialChar is set, skip the rest
-			if skipSpecialChar {
-				if jsonOutput {
-					output.Allowed = []string{}
-					output.Blocked = []string{}
-					output.Converted = []string{}
-					output.Count = map[string]int{"allowed": 0, "blocked": 0, "converted": 0}
-					jsonBytes, _ := json.Marshal(output)
-					safePrintln(string(jsonBytes))
-				} else {
-					if noColor {
-						safePrintf("%s [REFLECTED: YES] [ALLOWED: ] [BLOCKED: ] [CONVERTED: ]\n", inputURL)
-					} else {
-						safePrintf("%s [\033[92mREFLECTED: YES\033[0m] [\033[32mALLOWED: \033[0m] [\033[31mBLOCKED: \033[0m] [\033[33mCONVERTED: \033[0m]\n", inputURL)
-					}
-				}
-				continue
-			}
-
-			// Otherwise, continue with special char checks
-			allowed := []string{}
-			blocked := []string{}
-			converted := []string{}
-
-		outerLoop:
-			for _, char := range customSpecialChars {
-				testURLRaw, err := runPvreplace(baseURL, "rix4uni"+char)
-				if err != nil {
-					safePrintf("Error running pvreplace for char '%s': %v\n", char, err)
-					continue
-				}
-
-				testURLs := strings.Split(testURLRaw, "\n")
-				for _, testURL := range testURLs {
-					testURL = strings.TrimSpace(testURL)
-					if testURL == "" {
-						continue
-					}
-
-					if verbose && !jsonOutput {
-						if noColor {
-							safePrintf("CHECKING: %s\n", testURL)
-						} else {
-							safePrintf("\033[95mCHECKING: %s\033[0m\n", testURL)
-						}
-					}
-
-					var testBody string
-					var testDomBody string
-					foundInHTML := false
-					foundInDOM := false
-
-					// If base URL was only found in DOM, skip HTML check and go straight to DOM
-					if baseFoundInDOM && !baseFoundInHTML && !noChromeDP {
-						testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
-						if err != nil {
-							if verbose {
-								safePrintf("Error fetching DOM for test URL: %v\n", err)
-							}
-							continue
-						} else {
-							foundInDOM = strings.Contains(testDomBody, "rix4uni"+char)
-						}
-					} else {
-						// Base URL was found in HTML, so check HTML first
-						testBody, err = fetch(testURL, userAgent, timeout)
-						if err != nil {
-							if verbose {
-								safePrintf("Error fetching test URL: %v\n", err)
-							}
-							continue
-						}
-
-						foundInHTML = strings.Contains(testBody, "rix4uni"+char)
-
-						// If not found in HTML, check DOM as fallback
-						if !foundInHTML && !noChromeDP {
-							testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
-							if err != nil {
-								if verbose {
-									safePrintf("Error fetching DOM for test URL: %v\n", err)
-								}
-							} else {
-								foundInDOM = strings.Contains(testDomBody, "rix4uni"+char)
-							}
-						}
-					}
-
-					if foundInHTML || foundInDOM {
-						allowed = append(allowed, char) // ALLOWED
-						break outerLoop // Stop checking after first allowed character
-					} else if conv, exists := conversions[char]; exists {
-						convertedInHTML := false
-						convertedInDOM := false
-
-						// If base URL was only found in DOM, skip HTML check for converted entities
-						if baseFoundInDOM && !baseFoundInHTML {
-							// We already have testDomBody from the character check above
-							if testDomBody != "" {
-								convertedInDOM = strings.Contains(testDomBody, "rix4uni"+conv)
-							}
-						} else {
-							// Base URL was found in HTML, so check HTML first
-							convertedInHTML = strings.Contains(testBody, "rix4uni"+conv)
-
-							// If not found in HTML, check DOM for converted entities
-							if !convertedInHTML && testDomBody != "" {
-								convertedInDOM = strings.Contains(testDomBody, "rix4uni"+conv)
-							} else if !convertedInHTML && !noChromeDP {
-								// Fetch DOM if we haven't already
-								testDomBody, err = fetchDOM(testURL, userAgent, chromedpTimeout)
-								if err == nil {
-									convertedInDOM = strings.Contains(testDomBody, "rix4uni"+conv)
-								}
-							}
-						}
-
-						if convertedInHTML || convertedInDOM {
-							converted = append(converted, fmt.Sprintf("%s ➔ %s", char, conv)) // CONVERTED
-						} else {
-							blocked = append(blocked, char) // BLOCKED
-						}
-					} else {
-						blocked = append(blocked, char) // BLOCKED
-					}
-
-					break // Test first generated URL only
-				}
-			}
-
-			if jsonOutput {
-				output.Allowed = allowed
-				output.Blocked = blocked
-				output.Converted = converted
-				output.Count = map[string]int{
-					"allowed":   len(allowed),
-					"blocked":   len(blocked),
-					"converted": len(converted),
-				}
-				jsonBytes, _ := json.Marshal(output)
-				safePrintln(string(jsonBytes))
-			} else {
-				// Single-line output format
-				allowedStr := strings.Join(allowed, " ")
-				blockedStr := strings.Join(blocked, " ")
-				convertedStr := strings.Join(converted, " ")
-				if noColor {
-					safePrintf("%s [REFLECTED: YES] [ALLOWED: %s] [BLOCKED: %s] [CONVERTED: %s]\n", inputURL, allowedStr, blockedStr, convertedStr)
-				} else {
-					safePrintf("%s [\033[92mREFLECTED: YES\033[0m] [\033[32mALLOWED: %s\033[0m] [\033[31mBLOCKED: %s\033[0m] [\033[33mCONVERTED: %s\033[0m]\n", inputURL, allowedStr, blockedStr, convertedStr)
-				}
-			}
-
 		} else {
-			output.Reflected = false
-			if jsonOutput {
-				output.Allowed = []string{}
-				output.Blocked = []string{}
-				output.Converted = []string{}
-				output.Count = map[string]int{"allowed": 0, "blocked": 0, "converted": 0}
-				jsonBytes, _ := json.Marshal(output)
-				safePrintln(string(jsonBytes))
-			} else {
-				// Single-line output for non-reflected URLs
-				if noColor {
-					safePrintf("%s [REFLECTED: NO] [ALLOWED: ] [BLOCKED: ] [CONVERTED: ]\n", inputURL)
-				} else {
-					safePrintf("%s [\033[91mREFLECTED: NO\033[0m] [\033[32mALLOWED: \033[0m] [\033[31mBLOCKED: \033[0m] [\033[33mCONVERTED: \033[0m]\n", inputURL)
-				}
-			}
+			reflected = isReflected(domBody, injectedPayloads)
+		}
+	}
+
+	if reflected {
+		if noColor {
+			safePrintf("[REFLECTED] %s\n", testURL)
+		} else {
+			safePrintf("[\033[91mREFLECTED\033[0m] %s\n", testURL)
+		}
+	} else if !vuln {
+		if noColor {
+			safePrintf("[NOT REFLECTED] %s\n", testURL)
+		} else {
+			safePrintf("[\033[92mNOT REFLECTED\033[0m] %s\n", testURL)
 		}
 	}
 }
@@ -398,58 +191,21 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 func main() {
 	userAgent := pflag.StringP("user-agent", "H", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", "Custom User-Agent header for HTTP requests.")
 	timeout := pflag.IntP("timeout", "t", 15, "Timeout for HTTP requests in seconds.")
-	skipSpecialChar := pflag.BoolP("skipspecialchar", "s", false, "Only check rix4uni in reponse and move to next url, skip checking special characters.")
-	checkspecialChar := pflag.String("checkspecialchar", "", "Custom special characters to test (single char or comma-separated, e.g., '<' or '<, >'). Cannot be used with --skipspecialchar.")
-	concurrent := pflag.IntP("concurrent", "c", 50, "Number of concurrent workers for processing URLs (default: 10).")
+	concurrent := pflag.IntP("concurrent", "c", 50, "Number of concurrent workers for processing URLs (default: 50).")
 	noColor := pflag.Bool("no-color", false, "Do not use colored output.")
 	silent := pflag.Bool("silent", false, "silent mode.")
 	version := pflag.Bool("version", false, "Print the version of the tool and exit.")
 	verbose := pflag.Bool("verbose", false, "Enable verbose output for debugging purposes.")
-	jsonOutput := pflag.Bool("json", false, "Output results in JSON format.")
 	chromedpConcurrent := pflag.Int("chromedp-concurrent", 5, "Number of concurrent ChromeDP browser instances")
 	chromedpTimeout := pflag.Int("chromedp-timeout", 30, "ChromeDP page rendering timeout in seconds")
 	noChromeDP := pflag.Bool("no-chromedp", false, "Disable ChromeDP fallback")
+	vuln := pflag.Bool("vuln", false, "Show only REFLECTED url")
 	pflag.Parse()
 
 	if *version {
 		banner.PrintBanner()
 		banner.PrintVersion()
 		return
-	}
-
-	// Validate that --checkspecialchar and --skipspecialchar are not used together
-	if *checkspecialChar != "" && *skipSpecialChar {
-		fmt.Fprintf(os.Stderr, "Error: --checkspecialchar and --skipspecialchar cannot be used together\n")
-		os.Exit(1)
-	}
-
-	// Parse custom special characters if provided
-	var charsToUse []string
-	if *checkspecialChar != "" {
-		// Check if input is a file (contains .txt)
-		if strings.Contains(*checkspecialChar, ".txt") {
-			fileContent, err := ioutil.ReadFile(*checkspecialChar)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading file %s: %v\n", *checkspecialChar, err)
-				os.Exit(1)
-			}
-			// Parse each line as a separate special character/string
-			lines := strings.Split(string(fileContent), "\n")
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed != "" {
-					charsToUse = append(charsToUse, trimmed)
-				}
-			}
-		} else {
-			charsToUse = parseSpecialChars(*checkspecialChar)
-		}
-		if len(charsToUse) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: --checkspecialchar provided but no valid characters found\n")
-			os.Exit(1)
-		}
-	} else {
-		charsToUse = specialChars
 	}
 
 	if !*silent {
@@ -500,7 +256,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for url := range jobs {
-				processURL(url, *userAgent, *timeout, *noColor, *verbose, *skipSpecialChar, *jsonOutput, charsToUse, *chromedpTimeout, *noChromeDP)
+				processURL(url, *userAgent, *timeout, *noColor, *verbose, *chromedpTimeout, *noChromeDP, *vuln)
 			}
 		}()
 	}
