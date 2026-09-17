@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -117,16 +118,25 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 
 var reParamValue = regexp.MustCompile(`=[^&\s]*`)
 
-func replaceParamValues(url string) (string, []string) {
+func replaceParamValues(u string) (string, string, []string) {
 	count := 0
 	var payloads []string
-	modifiedURL := reParamValue.ReplaceAllStringFunc(url, func(match string) string {
+
+	displayURL := reParamValue.ReplaceAllStringFunc(u, func(match string) string {
 		count++
 		p := fmt.Sprintf("%s%d%s", payloadPrefix, count, payloadSuffix)
 		payloads = append(payloads, p)
 		return "=" + p
 	})
-	return modifiedURL, payloads
+
+	count = 0
+	requestURL := reParamValue.ReplaceAllStringFunc(u, func(match string) string {
+		count++
+		p := fmt.Sprintf("%s%d%s", payloadPrefix, count, payloadSuffix)
+		return "=" + url.QueryEscape(p)
+	})
+
+	return displayURL, requestURL, payloads
 }
 
 func isReflected(content string, payloads []string) bool {
@@ -139,11 +149,11 @@ func isReflected(content string, payloads []string) bool {
 }
 
 func processURL(inputURL string, userAgent string, timeout int, noColor bool, verbose bool, chromedpTimeout int, noChromeDP bool, vuln bool) {
-	// Build the test URL by injecting numbered payloads into all parameter values
-	testURL, injectedPayloads := replaceParamValues(inputURL)
+	// Build the display URL and standard URL-encoded request URL
+	displayURL, requestURL, injectedPayloads := replaceParamValues(inputURL)
 
-	// Make a single HTTP request with the full payload
-	body, fetchErr := fetch(testURL, userAgent, timeout)
+	// Make a single HTTP request with standard browser-encoded payload
+	body, fetchErr := fetch(requestURL, userAgent, timeout)
 	reflected := false
 
 	if fetchErr != nil {
@@ -163,7 +173,7 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 				safePrintln("\033[36mNot found in HTML, checking DOM...\033[0m")
 			}
 		}
-		domBody, domErr := fetchDOM(testURL, userAgent, chromedpTimeout)
+		domBody, domErr := fetchDOM(requestURL, userAgent, chromedpTimeout)
 		if domErr != nil {
 			if verbose {
 				safePrintf("Error fetching DOM: %v\n", domErr)
@@ -175,15 +185,15 @@ func processURL(inputURL string, userAgent string, timeout int, noColor bool, ve
 
 	if reflected {
 		if noColor {
-			safePrintf("[REFLECTED] %s\n", testURL)
+			safePrintf("[REFLECTED] %s\n", displayURL)
 		} else {
-			safePrintf("[\033[91mREFLECTED\033[0m] %s\n", testURL)
+			safePrintf("[\033[91mREFLECTED\033[0m] %s\n", displayURL)
 		}
 	} else if !vuln {
 		if noColor {
-			safePrintf("[NOT REFLECTED] %s\n", testURL)
+			safePrintf("[NOT REFLECTED] %s\n", displayURL)
 		} else {
-			safePrintf("[\033[92mNOT REFLECTED\033[0m] %s\n", testURL)
+			safePrintf("[\033[92mNOT REFLECTED\033[0m] %s\n", displayURL)
 		}
 	}
 }

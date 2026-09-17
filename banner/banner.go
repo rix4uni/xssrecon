@@ -5,7 +5,7 @@ import (
 )
 
 // prints the version message
-const version = "v0.0.6"
+const version = "v0.0.7"
 
 func PrintVersion() {
 	fmt.Printf("Current xssrecon version %s\n", version)
