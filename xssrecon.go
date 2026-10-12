@@ -21,7 +21,7 @@ import (
 
 const (
 	payloadPrefix = "rix4uni"
-	payloadSuffix = "'\">"
+	payloadSuffix = "'\"<>"
 )
 
 var outputMutex sync.Mutex
