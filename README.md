@@ -62,10 +62,10 @@ cat urls.txt | xssrecon
 
 ## Output
 ```console
-[REFLECTED] https://labs.hackxpert.com/RXSS/GET/01.php?fname=rix4uni1'">
-[REFLECTED] https://kzlabs.in/subdomains/tutorialrepublic/?q=rix4uni1'">
-[NOT REFLECTED] http://testphp.vulnweb.com/artists.php?artist=rix4uni1'">&id=rix4uni2'">
-[NOT REFLECTED] http://testphp.vulnweb.com/artists.php?file=rix4uni1'">
-[NOT REFLECTED] https://labs.hackxpert.com/RXSS/GET/00.php?fname=rix4uni1'">
-[NOT REFLECTED] https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni1'">
+[REFLECTED] https://labs.hackxpert.com/RXSS/GET/01.php?fname=rix4uni1'"<>
+[REFLECTED] https://kzlabs.in/subdomains/tutorialrepublic/?q=rix4uni1'"<>
+[NOT REFLECTED] http://testphp.vulnweb.com/artists.php?artist=rix4uni1'"<>&id=rix4uni2'"<>
+[NOT REFLECTED] http://testphp.vulnweb.com/artists.php?file=rix4uni1'"<>
+[NOT REFLECTED] https://labs.hackxpert.com/RXSS/GET/00.php?fname=rix4uni1'"<>
+[NOT REFLECTED] https://summer.harvard.edu/search/?live_global%5Bquery%5D=rix4uni1'"<>
 ```
