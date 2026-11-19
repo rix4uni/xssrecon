@@ -130,7 +130,7 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 	defer shutdownBrowser(ctx, sess)
 
 	// Start the browser
-	if err := chromedp.Run(ctx); err != nil {
+	if err := chromedp.Do(ctx); err != nil {
 		return "", err
 	}
 	if c := chromedp.FromContext(ctx); c != nil && c.Browser != nil {
@@ -140,21 +140,18 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 	tabCtx, tabCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer tabCancel()
 
-	var htmlContent string
-
-	// Navigate to URL and get rendered DOM
-	err = chromedp.Run(tabCtx,
+	// Navigate to URL and wait for JavaScript to render
+	err = chromedp.Do(tabCtx,
 		chromedp.Navigate(url),
-		chromedp.WaitVisible("body", chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second), // Wait for JavaScript to render
-		chromedp.OuterHTML("html", &htmlContent),
+		chromedp.WaitVisible(chromedp.CSS("body")),
+		chromedp.Sleep(2*time.Second),
 	)
-
 	if err != nil {
 		return "", err
 	}
 
-	return htmlContent, nil
+	// Get rendered DOM
+	return chromedp.Run(tabCtx, chromedp.OuterHTML(chromedp.CSS("html")))
 }
 
 // chromeSession tracks one launched Chrome browser and the profile
