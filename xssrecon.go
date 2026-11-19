@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -9,9 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -77,9 +83,28 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 		defer func() { <-chromedpSemaphore }()
 	}
 
-	// Create context with timeout
-	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer timeoutCancel()
+	// Create this browser's profile directory ourselves (instead of letting
+	// chromedp do it) so we control when it is deleted. Chrome's own temp
+	// files (TMPDIR) also go inside it, so one delete removes everything.
+	profileDir, err := os.MkdirTemp("", "xssrecon-chrome-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(filepath.Join(profileDir, "tmp"), 0o700); err != nil {
+		os.RemoveAll(profileDir)
+		return "", err
+	}
+	sess := &chromeSession{dir: profileDir, tmpDir: filepath.Join(profileDir, "tmp")}
+	trackSession(sess)
+	// Deferred first, so it runs last: after the browser is fully closed,
+	// kill any leftover Chrome processes and delete the profile.
+	defer closeSession(sess)
+
+	// Safety net in case Chrome hangs while starting or closing. The page
+	// timeout itself is applied to the tab below, so a slow page closes the
+	// browser gracefully instead of killing it mid-write.
+	watchdogCtx, watchdogCancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second+30*time.Second)
+	defer watchdogCancel()
 
 	// Create chromedp context with options
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -88,9 +113,11 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.UserAgent(userAgent),
+		chromedp.UserDataDir(profileDir),
+		chromedp.Env("TMPDIR="+sess.tmpDir),
 	)
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(timeoutCtx, opts...)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(watchdogCtx, opts...)
 	defer allocCancel()
 
 	// Create chrome context
@@ -98,11 +125,25 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 		// Suppress chromedp logs
 	}))
 	defer ctxCancel()
+	// Runs before ctxCancel: ask Chrome to close itself cleanly (up to 5s),
+	// then kill whatever is left of its process tree.
+	defer shutdownBrowser(ctx, sess)
+
+	// Start the browser
+	if err := chromedp.Run(ctx); err != nil {
+		return "", err
+	}
+	if c := chromedp.FromContext(ctx); c != nil && c.Browser != nil {
+		sess.setProcess(c.Browser.Process())
+	}
+
+	tabCtx, tabCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer tabCancel()
 
 	var htmlContent string
 
 	// Navigate to URL and get rendered DOM
-	err := chromedp.Run(ctx,
+	err = chromedp.Run(tabCtx,
 		chromedp.Navigate(url),
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		chromedp.Sleep(2*time.Second), // Wait for JavaScript to render
@@ -114,6 +155,153 @@ func fetchDOM(url string, userAgent string, timeout int) (string, error) {
 	}
 
 	return htmlContent, nil
+}
+
+// chromeSession tracks one launched Chrome browser and the profile
+// directory it uses, so the profile can be deleted once the browser
+// (and every child process it spawned) has exited.
+type chromeSession struct {
+	dir    string
+	tmpDir string // TMPDIR given to Chrome; inherited by all its processes
+
+	mu   sync.Mutex
+	proc *os.Process
+}
+
+func (s *chromeSession) setProcess(p *os.Process) {
+	s.mu.Lock()
+	s.proc = p
+	s.mu.Unlock()
+}
+
+// killTree force-kills the browser and all of its child processes
+// (renderer, GPU, network, zygote), so nothing keeps writing into the
+// profile directory after we delete it.
+func (s *chromeSession) killTree() {
+	s.mu.Lock()
+	p := s.proc
+	s.mu.Unlock()
+	if p != nil {
+		_ = p.Kill()
+	}
+	killProcessesWithEnv("TMPDIR=" + s.tmpDir)
+}
+
+// killProcessesWithEnv kills every process whose environment contains the
+// exact entry marker. Each browser gets a unique TMPDIR and every Chrome
+// child process inherits it, so this finds that browser's leftover
+// processes even after they were orphaned. Only Linux has /proc/<pid>/environ;
+// on Windows and macOS Chrome's children exit together with the browser.
+func killProcessesWithEnv(marker string) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	self := os.Getpid()
+	want := []byte(marker)
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		env, err := os.ReadFile("/proc/" + e.Name() + "/environ")
+		if err != nil {
+			continue
+		}
+		for _, kv := range bytes.Split(env, []byte{0}) {
+			if bytes.Equal(kv, want) {
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Kill()
+				}
+				break
+			}
+		}
+	}
+}
+
+var (
+	sessionsMu sync.Mutex
+	sessions   = map[*chromeSession]struct{}{}
+)
+
+func trackSession(s *chromeSession) {
+	sessionsMu.Lock()
+	sessions[s] = struct{}{}
+	sessionsMu.Unlock()
+}
+
+func untrackSession(s *chromeSession) {
+	sessionsMu.Lock()
+	delete(sessions, s)
+	sessionsMu.Unlock()
+}
+
+// removeProfileDir deletes the profile directory, retrying for a few
+// seconds in case a dying process is still releasing or writing files.
+func removeProfileDir(dir string) error {
+	var err error
+	for i := 0; i < 10; i++ {
+		err = os.RemoveAll(dir)
+		if err == nil {
+			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+				return nil
+			}
+			err = fmt.Errorf("directory was recreated while deleting")
+		}
+		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+	}
+	return err
+}
+
+// closeSession runs after the browser has been closed: it kills any
+// leftover Chrome processes and deletes the profile directory. If the
+// delete fails, the session stays tracked so cleanupAllSessions retries it
+// before the program exits.
+func closeSession(s *chromeSession) {
+	s.killTree()
+	if err := removeProfileDir(s.dir); err != nil {
+		outputMutex.Lock()
+		fmt.Fprintf(os.Stderr, "warning: could not delete Chrome profile %s: %v\n", s.dir, err)
+		outputMutex.Unlock()
+		return
+	}
+	untrackSession(s)
+}
+
+// cleanupAllSessions kills every browser still tracked and deletes its
+// profile. Used at normal exit and when the tool is interrupted.
+func cleanupAllSessions() {
+	sessionsMu.Lock()
+	list := make([]*chromeSession, 0, len(sessions))
+	for s := range sessions {
+		list = append(list, s)
+	}
+	sessionsMu.Unlock()
+
+	for _, s := range list {
+		s.killTree()
+		if removeProfileDir(s.dir) == nil {
+			untrackSession(s)
+		}
+	}
+}
+
+// shutdownBrowser closes Chrome gracefully, giving it up to 5 seconds,
+// then force-kills any Chrome processes still alive.
+func shutdownBrowser(ctx context.Context, sess *chromeSession) {
+	done := make(chan struct{})
+	go func() {
+		chromedp.Cancel(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+	sess.killTree()
 }
 
 var reParamValue = regexp.MustCompile(`=[^&\s]*`)
@@ -248,6 +436,16 @@ func main() {
 	}
 	chromedpSemaphore = make(chan struct{}, numChromeDPWorkers)
 
+	// On Ctrl+C / kill, close all open browsers and delete their profiles
+	// before exiting.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cleanupAllSessions()
+		os.Exit(130)
+	}()
+
 	// Create worker pool
 	numWorkers := *concurrent
 	if numWorkers < 1 {
@@ -279,4 +477,7 @@ func main() {
 
 	// Wait for all workers to complete
 	wg.Wait()
+
+	// Retry deleting any profile that could not be removed earlier
+	cleanupAllSessions()
 }

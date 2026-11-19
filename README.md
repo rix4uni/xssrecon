@@ -16,9 +16,9 @@ go install github.com/rix4uni/xssrecon@latest
 ## Download prebuilt binaries
 
 ```
-wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.8/xssrecon-linux-amd64-0.0.8.tgz
-tar -xvzf xssrecon-linux-amd64-0.0.8.tgz
-rm -rf xssrecon-linux-amd64-0.0.8.tgz
+wget https://github.com/rix4uni/xssrecon/releases/download/v0.0.9/xssrecon-linux-amd64-0.0.9.tgz
+tar -xvzf xssrecon-linux-amd64-0.0.9.tgz
+rm -rf xssrecon-linux-amd64-0.0.9.tgz
 mv xssrecon ~/go/bin/xssrecon
 ```
 
